@@ -398,6 +398,9 @@ data "aws_iam_policy_document" "allow_access_from_elb_account" {
 }
 
 resource "aws_lb" "eth_nodes_lb" {
+  depends_on = [
+    aws_subnet.eth_private_subnet
+  ]
   name               = "eth-nodes-lb"
   internal           = true
   load_balancer_type = "application"
