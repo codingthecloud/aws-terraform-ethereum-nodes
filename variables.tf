@@ -22,6 +22,10 @@ variable "private_subnets_cidr" {
   type = list(string)
 }
 
+variable "eth_static_data_bucket" {
+  type = string
+}
+
 variable "vpc_cidr" {
   type = string
 }
