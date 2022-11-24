@@ -21,14 +21,18 @@ data "aws_ami" "ubuntu" {
 }
 
 resource "aws_instance" "ethereum_node" {
+  depends_on = [
+    aws_s3_bucket.eth_static_data_bucket
+  ]
   count         = var.nodes_number
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.eth_node_instance_type
   subnet_id     = aws_subnet.eth_public_subnet[count.index].id
   tags = {
     Name = "ethereum-node-${count.index}"
+    Role = "eth-node"
   }
-  user_data              = file("ec2_user_data.sh")
+  user_data              = templatefile("ec2_user_data.sh", { eth_static_data_bucket = aws_s3_bucket.eth_static_data_bucket.bucket, health_check_package = aws_s3_object.object_healthcheck.id })
   iam_instance_profile   = aws_iam_instance_profile.eth_node_profile.name
   vpc_security_group_ids = [aws_security_group.inbound_node_sg.id]
 }
@@ -59,21 +63,55 @@ resource "aws_ebs_volume" "chain_data" {
 }
 
 resource "aws_backup_plan" "ethereum_chain_data" {
-  name = "ethereum_chain_data_backup_plan"
+  name = "ethereum-chain-data-volumes-plan"
 
   rule {
-    rule_name         = "ethereum_chain_data_backup_plan"
+    rule_name         = "ethereum-chain-data-volumes-plan"
     target_vault_name = aws_backup_vault.ethereum_chain_data.name
-    schedule          = "cron(0 12 * * ? *)"
+    schedule          = "cron(0 */3 * * ? *)"
 
     lifecycle {
-      delete_after = 14
+      delete_after = 2
     }
+  }
+}
+resource "aws_iam_role" "aws_backup_service_role" {
+  name               = "AWSBackupServiceRole"
+  assume_role_policy = <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": ["sts:AssumeRole"],
+      "Effect": "allow",
+      "Principal": {
+        "Service": ["backup.amazonaws.com"]
+      }
+    }
+  ]
+}
+POLICY
+}
+
+resource "aws_iam_role_policy_attachment" "aws_backup_service_role_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+  role       = aws_iam_role.aws_backup_service_role.name
+}
+
+resource "aws_backup_selection" "eth_nodes_volumes_selection" {
+  iam_role_arn = aws_iam_role.aws_backup_service_role.arn
+  name         = "eth-nodes-volumes-selection"
+  plan_id      = aws_backup_plan.ethereum_chain_data.id
+
+  selection_tag {
+    type  = "STRINGEQUALS"
+    key   = "Role"
+    value = "eth-node"
   }
 }
 
 resource "aws_backup_vault" "ethereum_chain_data" {
-  name = "ethereum_chain_data"
+  name = "ethereum-chain-data"
 }
 
 resource "aws_iam_instance_profile" "eth_node_profile" {
@@ -84,17 +122,27 @@ resource "aws_iam_instance_profile" "eth_node_profile" {
 resource "aws_iam_role" "eth_node_instance_role" {
   path                = "/"
   managed_policy_arns = [data.aws_iam_policy.access_nodes_through_ssm.arn]
-
+  name_prefix         = "EthNodeInstanceRole"
   inline_policy {
-    name = "my_inline_policy"
+    name = "eth-node-s3-access"
 
     policy = jsonencode({
       Version = "2012-10-17"
       Statement = [
         {
-          Action   = ["s3:ListBucket", "s3:PutObject"]
-          Effect   = "Allow"
-          Resource = ["${aws_s3_bucket.chain_data_backup_bucket.arn}", "${aws_s3_bucket.chain_data_backup_bucket.arn}/*"]
+          Action = [
+            "s3:ListBucket",
+            "s3:PutObject",
+            "s3:GetBucketLocation",
+            "s3:GetObject"
+          ]
+          Effect = "Allow"
+          Resource = [
+            "${aws_s3_bucket.chain_data_backup_bucket.arn}",
+            "${aws_s3_bucket.chain_data_backup_bucket.arn}/*",
+            "${aws_s3_bucket.eth_static_data_bucket.arn}",
+            "${aws_s3_bucket.eth_static_data_bucket.arn}/*"
+          ]
         },
       ]
     })
@@ -361,7 +409,7 @@ resource "aws_lb" "eth_nodes_lb" {
   tags = {
     Environment = "eth-nodes-lb"
   }
-    access_logs {
+  access_logs {
     bucket  = aws_s3_bucket.infra_logs.bucket
     prefix  = "alb-eth-nodes"
     enabled = true
@@ -403,4 +451,38 @@ resource "aws_lb_listener" "eth_nodes_listener" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.eth_nodes_tg.arn
   }
+}
+
+resource "aws_s3_bucket" "eth_static_data_bucket" {
+  bucket = var.eth_static_data_bucket
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "eth_static_data_bucket_encryption" {
+  bucket = aws_s3_bucket.eth_static_data_bucket.bucket
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "eth_static_data_bucket_block_public" {
+  bucket = aws_s3_bucket.eth_static_data_bucket.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_object" "object_healthcheck" {
+  bucket = aws_s3_bucket.eth_static_data_bucket.bucket
+  key    = "eth-node-lb-healthcheck-master.zip"
+  source = "eth-node-lb-healthcheck-master.zip"
+
+  # The filemd5() function is available in Terraform 0.11.12 and later
+  # For Terraform 0.11.11 and earlier, use the md5() function and the file() function:
+  # etag = "${md5(file("path/to/file"))}"
+  etag = filemd5("eth-node-lb-healthcheck-master.zip")
 }

@@ -8,9 +8,12 @@ add-apt-repository -y ppa:ethereum/ethereum
 apt-get update -y && apt-get upgrade -y && apt-get install -y \
     ethereum \
     awscli \
+    nodejs \
+    npm \
     xfsprogs \
     nvme-cli \
     jq \
+    unzip \
     curl
 
 ##########################
@@ -114,3 +117,42 @@ systemctl enable prysm.service
 systemctl daemon-reload
 
 service prysm start
+
+
+###############################
+# Install Healthcheck service #
+###############################
+
+eth_static_data_bucket=${eth_static_data_bucket}
+health_check_package=${health_check_package}
+
+private_ip=$(ec2metadata --local-ipv4)
+aws s3 cp "s3://$eth_static_data_bucket/$health_check_package" /home/ethereum/
+unzip "/home/ethereum/$health_check_package" -d /home/ethereum/
+rm -f /home/ethereum/eth-node-lb-healthcheck-master.zip
+sed -i "s/TH_RPC_HOST=127.0.0.1/TH_RPC_HOST=$private_ip/g" /home/ethereum/eth-node-lb-healthcheck-master/.env
+cd /home/ethereum/eth-node-lb-healthcheck-master/
+npm audit fix
+npm install
+chown ethereum:ethereum -R /home/ethereum/eth-node-lb-healthcheck-master
+
+cat << FINISH > /etc/systemd/system/eth-healthcheck.service
+[Unit]
+Description=Healthcheck for Ethereum nodes
+
+[Service]
+Type=simple
+User=ethereum
+Restart=always
+RestartSec=12
+ExecStart=node /home/ethereum/eth-node-lb-healthcheck-master/index.js
+
+[Install]
+WantedBy=default.target
+FINISH
+
+systemctl daemon-reload
+systemctl enable eth-healthcheck.service
+systemctl daemon-reload
+
+service eth-healthcheck start
