@@ -30,7 +30,6 @@ resource "aws_instance" "ethereum_node" {
   subnet_id     = aws_subnet.eth_public_subnet[count.index].id
   tags = {
     Name = "ethereum-node-${count.index}"
-    Role = "eth-node"
   }
   user_data              = templatefile("ec2_user_data.sh", { eth_static_data_bucket = aws_s3_bucket.eth_static_data_bucket.bucket, health_check_package = aws_s3_object.object_healthcheck.id })
   iam_instance_profile   = aws_iam_instance_profile.eth_node_profile.name
@@ -56,6 +55,7 @@ resource "aws_ebs_volume" "chain_data" {
   availability_zone = data.aws_availability_zones.available_az.names[count.index]
   tags = {
     Name = "ethereum-chain-data-${count.index}"
+    Role = "eth-node"
   }
   encrypted  = true
   kms_key_id = data.aws_kms_key.current.arn
