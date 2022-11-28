@@ -70,6 +70,7 @@ chown ethereum:ethereum -R "$chain_data_path"
 ################
 
 geth_public_key=geth_public_key_linux_9BA28146.key
+# variable eth_static_data_bucket comes from terraform template resource
 aws s3 cp "s3://${eth_static_data_bucket}/$geth_public_key" $geth_public_key
 gpg --import ./$geth_public_key
 

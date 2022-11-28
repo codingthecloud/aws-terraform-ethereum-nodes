@@ -57,7 +57,7 @@ data "aws_kms_key" "current" {
 
 resource "aws_ebs_volume" "chain_data" {
   count             = var.nodes_number
-  size              = 2000
+  size              = var.chain_data_volume_size
   availability_zone = data.aws_availability_zones.available_az.names[count.index]
   tags = {
     Name = "ethereum-chain-data-${count.index}"
@@ -314,17 +314,6 @@ resource "aws_s3_bucket_public_access_block" "chain_data_bucket_block_public" {
   restrict_public_buckets = true
 }
 
-data "aws_subnets" "private" {
-  filter {
-    name   = "vpc-id"
-    values = [aws_vpc.eth_vpc.id]
-  }
-
-  tags = {
-    Tier = "private"
-  }
-}
-
 resource "aws_security_group" "eth_lb_sg" {
   name        = "eth-lb-sg"
   description = "Allow eth RPC calls to nodes through LB"
@@ -404,14 +393,11 @@ data "aws_iam_policy_document" "allow_access_from_elb_account" {
 }
 
 resource "aws_lb" "eth_nodes_lb" {
-  depends_on = [
-    aws_subnet.eth_private_subnet
-  ]
   name               = "eth-nodes-lb"
   internal           = true
   load_balancer_type = "application"
   security_groups    = [aws_security_group.eth_lb_sg.id]
-  subnets            = [for subnet_id in data.aws_subnets.private.ids : subnet_id]
+  subnets            = [for subnet_id in aws_subnet.eth_private_subnet.*.id : subnet_id]
 
   enable_deletion_protection = false
 

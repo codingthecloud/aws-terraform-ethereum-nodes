@@ -1,7 +1,9 @@
 variable "chain_data_backup_bucket" {
   type = string
 }
-
+variable "chain_data_volume_size" {
+  type = string
+}
 variable "eth_node_instance_type" {
   type = string
 }
