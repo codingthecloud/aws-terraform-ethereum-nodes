@@ -22,7 +22,9 @@ data "aws_ami" "ubuntu" {
 
 resource "aws_instance" "ethereum_node" {
   depends_on = [
-    aws_s3_bucket.eth_static_data_bucket
+    aws_s3_bucket.eth_static_data_bucket,
+    aws_s3_object.geth_pgp_public_key,
+    aws_s3_object.object_healthcheck
   ]
   count         = var.nodes_number
   ami           = data.aws_ami.ubuntu.id
@@ -31,7 +33,11 @@ resource "aws_instance" "ethereum_node" {
   tags = {
     Name = "ethereum-node-${count.index}"
   }
-  user_data              = templatefile("ec2_user_data.sh", { eth_static_data_bucket = aws_s3_bucket.eth_static_data_bucket.bucket, health_check_package = aws_s3_object.object_healthcheck.id })
+  user_data = templatefile("ec2_user_data.sh", {
+    eth_static_data_bucket = aws_s3_bucket.eth_static_data_bucket.bucket,
+    health_check_package   = aws_s3_object.object_healthcheck.id
+    }
+  )
   iam_instance_profile   = aws_iam_instance_profile.eth_node_profile.name
   vpc_security_group_ids = [aws_security_group.inbound_node_sg.id]
 }
@@ -488,4 +494,15 @@ resource "aws_s3_object" "object_healthcheck" {
   # For Terraform 0.11.11 and earlier, use the md5() function and the file() function:
   # etag = "${md5(file("path/to/file"))}"
   etag = filemd5("eth-node-lb-healthcheck-master.zip")
+}
+
+resource "aws_s3_object" "geth_pgp_public_key" {
+  bucket = aws_s3_bucket.eth_static_data_bucket.bucket
+  key    = var.geth_public_key
+  source = var.geth_public_key
+
+  # The filemd5() function is available in Terraform 0.11.12 and later
+  # For Terraform 0.11.11 and earlier, use the md5() function and the file() function:
+  # etag = "${md5(file("path/to/file"))}"
+  etag = filemd5(var.geth_public_key)
 }

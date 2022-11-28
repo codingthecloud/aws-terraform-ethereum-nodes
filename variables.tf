@@ -29,3 +29,7 @@ variable "eth_static_data_bucket" {
 variable "vpc_cidr" {
   type = string
 }
+
+variable "geth_public_key" {
+  type = string
+}
