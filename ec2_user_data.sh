@@ -6,7 +6,6 @@
 
 add-apt-repository -y ppa:ethereum/ethereum
 apt-get update -y && apt-get upgrade -y && apt-get install -y \
-    ethereum \
     awscli \
     nodejs \
     npm \
@@ -58,8 +57,35 @@ echo "Volume UUID is: $volume_id"
 echo "UUID=$volume_id  $mount_point xfs  defaults,nofail  0  2" >> /etc/fstab
 
 mount -a
-mkdir "$chain_data_path"
-chown ethereum:ethereum "$chain_data_path" 
+
+if [ -d "$chain_data_path" ]; then
+  echo "Geth data directory exists. Chain data will be restored."
+else
+  mkdir "$chain_data_path"
+fi
+chown ethereum:ethereum -R "$chain_data_path"
+
+################
+# Install Geth #
+################
+
+geth_public_key=geth_public_key_linux_9BA28146.key
+aws s3 cp "s3://${eth_static_data_bucket}/$geth_public_key" $geth_public_key
+gpg --import ./$geth_public_key
+
+geth_server="https://gethstore.blob.core.windows.net/builds/"
+geth_release=geth-alltools-linux-amd64-1.10.26-e5eb32ac
+
+geth_binary=$geth_release.tar.gz
+wget $geth_server$geth_binary -O $geth_binary
+tar -xvf $geth_binary
+
+geth_asc=$geth_release.tar.gz.asc
+wget $geth_server$geth_asc -O $geth_asc
+
+gpg --verify $geth_asc
+
+mv $geth_release/* /usr/bin
 
 #########################
 # Creating Geth service #
