@@ -3,6 +3,7 @@ provider "aws" {
 }
 
 data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -24,7 +25,10 @@ resource "aws_instance" "ethereum_node" {
   depends_on = [
     aws_s3_bucket.eth_static_data_bucket,
     aws_s3_object.geth_pgp_public_key,
-    aws_s3_object.object_healthcheck
+    aws_s3_object.object_healthcheck,
+    aws_instance.influxdb_node,
+    aws_ssm_parameter.influxdb_node_private_ip,
+    aws_ssm_parameter.cloudwatch_agent_configuration
   ]
   count         = var.nodes_number
   ami           = data.aws_ami.ubuntu.id
@@ -33,13 +37,13 @@ resource "aws_instance" "ethereum_node" {
   tags = {
     Name = "ethereum-node-${count.index}"
   }
-  user_data = templatefile("ec2_user_data.sh", {
+  user_data = templatefile("ec2_user_data_eth_node.sh", {
     eth_static_data_bucket = aws_s3_bucket.eth_static_data_bucket.bucket,
     health_check_package   = aws_s3_object.object_healthcheck.id
     }
   )
   iam_instance_profile   = aws_iam_instance_profile.eth_node_profile.name
-  vpc_security_group_ids = [aws_security_group.inbound_node_sg.id]
+  vpc_security_group_ids = [aws_security_group.ethereum_node_sg.id]
 }
 
 resource "aws_volume_attachment" "ebs_attach_chain_data" {
@@ -104,30 +108,30 @@ resource "aws_iam_role_policy_attachment" "aws_backup_service_role_policy" {
   role       = aws_iam_role.aws_backup_service_role.name
 }
 
-resource "aws_backup_selection" "eth_nodes_volumes_selection" {
-  iam_role_arn = aws_iam_role.aws_backup_service_role.arn
-  name         = "eth-nodes-volumes-selection"
-  plan_id      = aws_backup_plan.ethereum_chain_data.id
+# resource "aws_backup_selection" "eth_nodes_volumes_selection" {
+#   iam_role_arn = aws_iam_role.aws_backup_service_role.arn
+#   name         = "eth-nodes-volumes-selection"
+#   plan_id      = aws_backup_plan.ethereum_chain_data.id
 
-  selection_tag {
-    type  = "STRINGEQUALS"
-    key   = "Role"
-    value = "eth-node"
-  }
-}
+#   selection_tag {
+#     type  = "STRINGEQUALS"
+#     key   = "Role"
+#     value = "eth-node"
+#   }
+# }
 
 resource "aws_backup_vault" "ethereum_chain_data" {
   name = "ethereum-chain-data"
 }
 
 resource "aws_iam_instance_profile" "eth_node_profile" {
-  name = "eth_node_profile"
+  name = "eth-node-profile"
   role = aws_iam_role.eth_node_instance_role.name
 }
 
 resource "aws_iam_role" "eth_node_instance_role" {
   path                = "/"
-  managed_policy_arns = [data.aws_iam_policy.access_nodes_through_ssm.arn]
+  managed_policy_arns = [data.aws_iam_policy.access_nodes_through_ssm.arn, data.aws_iam_policy.cloudwatch_agent_policy.arn]
   name_prefix         = "EthNodeInstanceRole"
   inline_policy {
     name = "eth-node-s3-access"
@@ -150,6 +154,26 @@ resource "aws_iam_role" "eth_node_instance_role" {
             "${aws_s3_bucket.eth_static_data_bucket.arn}/*"
           ]
         },
+        {
+          Action = [
+            "ssm:GetParameter",
+            "ssm:GetParameters"
+          ]
+          Effect = "Allow"
+          Resource = [
+            aws_ssm_parameter.influxdb_node_private_ip.arn
+          ]
+        },
+        {
+          Action = [
+            "secretsmanager:DescribeSecret",
+            "secretsmanager:GetSecretValue"
+          ]
+          Effect = "Allow"
+          Resource = [
+            "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:influx/*"
+          ]
+        }
       ]
     })
   }
@@ -174,7 +198,11 @@ data "aws_iam_policy" "access_nodes_through_ssm" {
   arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_security_group" "inbound_node_sg" {
+data "aws_iam_policy" "cloudwatch_agent_policy" {
+  arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_security_group" "ethereum_node_sg" {
   name        = "eth-node-sg"
   description = "Allow eth node traffic and SSM connection from VPC"
   vpc_id      = aws_vpc.eth_vpc.id
@@ -214,6 +242,7 @@ resource "aws_security_group" "inbound_node_sg" {
     cidr_blocks = [aws_vpc.eth_vpc.cidr_block]
   }
 
+  # improve this rule. Might not be needed.
   egress {
     from_port   = 0
     to_port     = 0
@@ -348,7 +377,8 @@ resource "aws_security_group" "eth_lb_sg" {
 }
 
 resource "aws_s3_bucket" "infra_logs" {
-  bucket = var.infra_logs_bucket
+  bucket        = var.infra_logs_bucket
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "infra_logs_bucket_encryption" {
@@ -379,7 +409,7 @@ data "aws_iam_policy_document" "allow_access_from_elb_account" {
   statement {
     principals {
       type        = "AWS"
-      identifiers = ["156460612806"] # ireland is 156460612806 https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html#attach-bucket-policy
+      identifiers = [var.aws_elb_account]
     }
 
     actions = [
@@ -474,21 +504,185 @@ resource "aws_s3_bucket_public_access_block" "eth_static_data_bucket_block_publi
 resource "aws_s3_object" "object_healthcheck" {
   bucket = aws_s3_bucket.eth_static_data_bucket.bucket
   key    = "eth-node-lb-healthcheck-master.zip"
-  source = "eth-node-lb-healthcheck-master.zip"
+  source = "assets/eth-node-lb-healthcheck-master.zip"
 
   # The filemd5() function is available in Terraform 0.11.12 and later
   # For Terraform 0.11.11 and earlier, use the md5() function and the file() function:
   # etag = "${md5(file("path/to/file"))}"
-  etag = filemd5("eth-node-lb-healthcheck-master.zip")
+  etag = filemd5("assets/eth-node-lb-healthcheck-master.zip")
 }
 
 resource "aws_s3_object" "geth_pgp_public_key" {
   bucket = aws_s3_bucket.eth_static_data_bucket.bucket
   key    = var.geth_public_key
-  source = var.geth_public_key
+  source = "assets/public-keys/${var.geth_public_key}"
 
   # The filemd5() function is available in Terraform 0.11.12 and later
   # For Terraform 0.11.11 and earlier, use the md5() function and the file() function:
   # etag = "${md5(file("path/to/file"))}"
-  etag = filemd5(var.geth_public_key)
+  etag = filemd5("assets/public-keys/${var.geth_public_key}")
 }
+
+resource "aws_instance" "influxdb_node" {
+  depends_on = [
+    aws_nat_gateway.nat_gateway,
+    aws_ssm_parameter.cloudwatch_agent_configuration
+  ]
+  count         = 1
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = var.eth_node_instance_type
+  subnet_id     = aws_subnet.eth_private_subnet[count.index].id
+  tags = {
+    Name = "influxdb-node-${count.index}"
+  }
+  user_data              = file("ec2_user_data_influxdb.sh")
+  iam_instance_profile   = aws_iam_instance_profile.influxdb_node_profile.name
+  vpc_security_group_ids = [aws_security_group.influxdb_node_sg.id]
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    encrypted   = true
+    kms_key_id  = data.aws_kms_key.current.arn
+  }
+}
+
+resource "aws_eip" "nat_gateway_eip" {
+  vpc = true
+}
+
+resource "aws_route_table" "nat_gateway" {
+  count  = 1
+  vpc_id = aws_vpc.eth_vpc.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat_gateway[count.index].id
+  }
+}
+
+resource "aws_route_table_association" "nat_gateway" {
+  count          = 1
+  subnet_id      = aws_subnet.eth_private_subnet[count.index].id
+  route_table_id = aws_route_table.nat_gateway[count.index].id
+}
+
+resource "aws_nat_gateway" "nat_gateway" {
+  count         = 1
+  allocation_id = aws_eip.nat_gateway_eip.id
+  subnet_id     = aws_subnet.eth_public_subnet[count.index].id
+
+  depends_on = [aws_internet_gateway.eth_igw]
+}
+
+resource "aws_security_group" "influxdb_node_sg" {
+  name        = "influxdb-node-sg"
+  description = "Allow influxdb node traffic and SSM connection from VPC"
+  vpc_id      = aws_vpc.eth_vpc.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.eth_vpc.cidr_block]
+  }
+
+  ingress {
+    from_port   = 8086
+    to_port     = 8086
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.eth_vpc.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  lifecycle {
+    # Necessary if changing 'name' or 'name_prefix' properties.
+    create_before_destroy = true
+  }
+
+}
+
+resource "aws_iam_instance_profile" "influxdb_node_profile" {
+  name = "influxdb-node-profile"
+  role = aws_iam_role.influxdb_node_instance_role.name
+}
+
+resource "aws_iam_role" "influxdb_node_instance_role" {
+  path                = "/"
+  managed_policy_arns = [data.aws_iam_policy.access_nodes_through_ssm.arn, data.aws_iam_policy.cloudwatch_agent_policy.arn]
+  name_prefix         = "InfluxdbNodeInstanceRole"
+  inline_policy {
+    name = "get-influx-admin-password"
+
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        {
+          Action = [
+            "secretsmanager:GetSecretValue",
+            "secretsmanager:CreateSecret",
+            "secretsmanager:TagResource",
+            "secretsmanager:DescribeSecret",
+            "secretsmanager:PutSecretValue"
+          ]
+          Effect = "Allow"
+          Resource = [
+            "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:influx/*"
+          ]
+        },
+      ]
+    })
+  }
+  assume_role_policy = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": "sts:AssumeRole",
+            "Principal": {
+               "Service": "ec2.amazonaws.com"
+            },
+            "Effect": "Allow",
+            "Sid": ""
+        }
+    ]
+}
+EOF
+}
+
+resource "aws_ssm_parameter" "influxdb_node_private_ip" {
+  name  = "/influx/private-ip"
+  type  = "String"
+  value = aws_instance.influxdb_node[0].private_ip
+}
+
+
+resource "aws_security_group" "grafana_sg" {
+  name        = "grafana-sg"
+  description = "Allow Grafana traffic"
+  vpc_id      = aws_vpc.eth_vpc.id
+
+  egress {
+    from_port   = 8086
+    to_port     = 8086
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.eth_vpc.cidr_block]
+  }
+
+  lifecycle {
+    # Necessary if changing 'name' or 'name_prefix' properties.
+    create_before_destroy = true
+  }
+
+}
+
+resource "aws_ssm_parameter" "cloudwatch_agent_configuration" {
+  name        = "AmazonCloudWatch-Config.json"
+  description = "CloudWatch configuration for ec2 instances"
+  type        = "String"
+  value       = file("assets/cloudwatch_agent_configuration.json")
+} 

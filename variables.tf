@@ -1,3 +1,7 @@
+variable "aws_elb_account" {
+  type = string
+}
+
 variable "chain_data_backup_bucket" {
   type = string
 }

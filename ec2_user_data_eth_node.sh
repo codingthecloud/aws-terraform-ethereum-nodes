@@ -15,6 +15,14 @@ apt-get update -y && apt-get upgrade -y && apt-get install -y \
     unzip \
     curl
 
+###########################
+# Install cloudwatch agent#
+###########################
+
+wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+sudo dpkg -i amazon-cloudwatch-agent.deb
+amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c ssm:AmazonCloudWatch-Config.json -s
+
 ##########################
 # Creating user ethereum #
 ##########################
@@ -93,7 +101,19 @@ mv $geth_release/* /usr/bin
 #########################
 
 private_ip=$(ec2metadata --local-ipv4)
+EC2_AVAIL_ZONE=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+EC2_REGION="$(echo $EC2_AVAIL_ZONE | sed 's/[a-z]$//')"
 
+# Retrieve token for accessing influxdb
+token_exists=false
+while ! $token_exists;do
+  aws secretsmanager describe-secret --secret-id influx/geth-token --region "$EC2_REGION" && token_exists=true || token_exists=false
+  sleep 10
+  echo "Waiting for influxdb token to become available"
+done
+
+influxdb_token=$(aws secretsmanager get-secret-value --region "$EC2_REGION" --secret-id "influx/geth-token" --output text --query 'SecretString')
+influxdb_private_ip=$(aws ssm get-parameter --region "$EC2_REGION" --name "/influx/private-ip" --output text --query 'Parameter.Value')
 cat << FINISH > /etc/systemd/system/geth.service
 [Unit]
 Description=Geth
@@ -103,7 +123,7 @@ Type=simple
 User=ethereum
 Restart=always
 RestartSec=12
-ExecStart=/usr/bin/geth --datadir "$chain_data_path" --mainnet --syncmode "snap" --authrpc.addr localhost --authrpc.port 8551 --authrpc.vhosts localhost --authrpc.jwtsecret /home/ethereum/jwt.hex --http --http.api eth,net,engine,admin --http.addr $private_ip --http.vhosts "*"
+ExecStart=/usr/bin/geth --datadir "$chain_data_path" --mainnet --syncmode "snap" --authrpc.addr localhost --authrpc.port 8551 --authrpc.vhosts localhost --authrpc.jwtsecret /home/ethereum/jwt.hex --http --http.api eth,net,engine,admin --http.addr $private_ip --http.vhosts "*" --metrics --metrics.influxdbv2 --metrics.influxdb.bucket geth --metrics.influxdb.organization geth --metrics.influxdb.token "$influxdb_token" --metrics.influxdb.endpoint "http://$influxdb_private_ip:8086" --metrics.influxdb.tags "host=$private_ip"
 
 [Install]
 WantedBy=default.target
@@ -158,7 +178,7 @@ aws s3 cp "s3://$eth_static_data_bucket/$health_check_package" /home/ethereum/
 unzip "/home/ethereum/$health_check_package" -d /home/ethereum/
 rm -f /home/ethereum/eth-node-lb-healthcheck-master.zip
 sed -i "s/TH_RPC_HOST=127.0.0.1/TH_RPC_HOST=$private_ip/g" /home/ethereum/eth-node-lb-healthcheck-master/.env
-cd /home/ethereum/eth-node-lb-healthcheck-master/
+cd /home/ethereum/eth-node-lb-healthcheck-master/ || exit
 npm audit fix
 npm install
 chown ethereum:ethereum -R /home/ethereum/eth-node-lb-healthcheck-master
