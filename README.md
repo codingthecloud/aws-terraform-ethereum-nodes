@@ -1,4 +1,4 @@
-# Generate a set of Ethereum nodes on AWS
+# Deploy Ethereum nodes on AWS
 
 This project provides a set of Ethereum nodes with an application load balancer in front of them for scaling requests.
 
