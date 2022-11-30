@@ -16,7 +16,7 @@ Application Load balancer forwards requests to three Ethereum nodes.
 
     ````
     aws secretsmanager create-secret --region eu-west-1 \
-    --name "influx/passworda" \
+    --name "influx/password" \
     --description "Influxdb password for user 'admin'." \
     --secret-string "YOUR_PASSWORD"
 

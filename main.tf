@@ -148,9 +148,9 @@ resource "aws_iam_role" "eth_node_instance_role" {
           ]
           Effect = "Allow"
           Resource = [
-            "${aws_s3_bucket.chain_data_backup_bucket.arn}",
+            aws_s3_bucket.chain_data_backup_bucket.arn,
             "${aws_s3_bucket.chain_data_backup_bucket.arn}/*",
-            "${aws_s3_bucket.eth_static_data_bucket.arn}",
+            aws_s3_bucket.eth_static_data_bucket.arn,
             "${aws_s3_bucket.eth_static_data_bucket.arn}/*"
           ]
         },
@@ -427,7 +427,7 @@ resource "aws_lb" "eth_nodes_lb" {
   internal           = true
   load_balancer_type = "application"
   security_groups    = [aws_security_group.eth_lb_sg.id]
-  subnets            = [for subnet_id in aws_subnet.eth_private_subnet.*.id : subnet_id]
+  subnets            = [for subnet_id in aws_subnet.eth_private_subnet : subnet_id.id]
 
   enable_deletion_protection = false
 
