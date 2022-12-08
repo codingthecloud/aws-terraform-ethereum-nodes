@@ -29,6 +29,7 @@ amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c ssm:AmazonCloudWatch-Confi
 
 useradd -m ethereum
 usermod -a -G ethereum ethereum
+usermod --shell /bin/bash ethereum
 
 #####################################################################
 # Create key used by Prysm validator to interact with Geth executor #
@@ -131,7 +132,6 @@ FINISH
 
 systemctl daemon-reload
 systemctl enable geth.service
-systemctl daemon-reload
 
 service geth start
 
@@ -200,6 +200,5 @@ FINISH
 
 systemctl daemon-reload
 systemctl enable eth-healthcheck.service
-systemctl daemon-reload
 
 service eth-healthcheck start
